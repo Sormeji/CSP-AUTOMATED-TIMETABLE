@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Class Timetable · South Asian University</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="bg-white text-black min-h-screen antialiased">
+
+    <!-- Institution bar -->
+    <div class="inst-bar">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 flex justify-between gap-4">
+            <span>South Asian University · New Delhi</span>
+            <span class="hidden sm:inline">Academic Timetable</span>
+        </div>
+    </div>
+
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 py-8 flex flex-col gap-8">
+
+        <!-- Masthead -->
+        <header class="masthead">
+            <div class="flex items-center gap-4 sm:gap-5 min-w-0">
+                <img src="{{ url_for('static', filename='img/sau-emblem.png') }}" alt="South Asian University emblem" class="masthead-logo">
+                <div class="masthead-rule" aria-hidden="true"></div>
+                <div class="min-w-0">
+                    <div class="eyebrow">South Asian University</div>
+                    <h1 class="masthead-title">Class Timetable</h1>
+                    <p class="masthead-sub">Monsoon Semester 2026 · Automated scheduling by constraint satisfaction</p>
+                </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+                <button id="exportCsvBtn" onclick="exportCSV()" class="btn-secondary hidden">Export CSV</button>
+                <button id="exportBtn" onclick="exportHTML()" class="btn-secondary hidden">Print / PDF</button>
+                <button id="solveBtn" onclick="runSolver()" class="btn-primary">Generate schedule</button>
+            </div>
+        </header>
+
+        <!-- Tabs -->
+        <nav class="flex gap-8 border-b border-neutral-200 -mt-4">
+            <button id="tabInput" onclick="switchTab('input')" class="tab tab-active">Setup</button>
+            <button id="tabOutput" onclick="switchTab('output')" class="tab">Timetable</button>
+        </nav>
+
+        <!-- Diagnostics -->
+        <div id="diagnosticContainer" class="hidden notice-strong" role="alert">
+            <div class="font-semibold mb-2">Cannot build a timetable</div>
+            <div id="diagnosticList" class="text-neutral-700 space-y-1"></div>
+        </div>
+
+        <!-- Input View -->
+        <div id="viewInput" class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+            <!-- Courses -->
+            <section class="panel">
+                <div class="panel-head">
+                    <h2 class="section-title">Courses</h2>
+                    <span id="courseCount" class="count">0</span>
+                </div>
+                <form id="courseForm" class="grid grid-cols-2 gap-2">
+                    <input id="cCode" placeholder="Code (e.g. FAI)" required class="field">
+                    <input id="cName" placeholder="Course title" required class="field">
+                    <input id="cFaculty" placeholder="Instructor" required class="field col-span-2">
+                    <label class="field-label">Students
+                        <input id="cStudents" type="number" min="1" value="30" required class="field">
+                    </label>
+                    <label class="field-label">Sessions / week
+                        <input id="cPerWeek" type="number" min="1" max="7" value="1" required class="field">
+                    </label>
+
+                    <fieldset class="col-span-2 flex flex-col gap-1">
+                        <legend class="field-label mb-1">Cohort(s) attending</legend>
+                        <div id="cohortChoices" class="cohort-choices"></div>
+                    </fieldset>
+
+                    <label class="col-span-2 flex items-center gap-2 text-sm cursor-pointer select-none">
+                        <input id="cLab" type="checkbox" class="checkbox"> Needs a lab
+                    </label>
+                    <button type="submit" class="btn-secondary col-span-2">Add course</button>
+                </form>
+                <div id="courseList" class="list"></div>
+            </section>
+
+            <!-- Rooms -->
+            <section class="panel">
+                <div class="panel-head">
+                    <h2 class="section-title">Rooms</h2>
+                    <span id="roomCount" class="count">0</span>
+                </div>
+                <form id="roomForm" class="grid grid-cols-2 gap-2">
+                    <input id="rId" placeholder="Room ID (e.g. CSE009)" required class="field">
+                    <input id="rCap" type="number" min="1" placeholder="Capacity" value="40" required class="field">
+                    <label class="col-span-2 flex items-center gap-2 text-sm cursor-pointer select-none">
+                        <input id="rLab" type="checkbox" class="checkbox"> Lab facility
+                    </label>
+                    <button type="submit" class="btn-secondary col-span-2">Add room</button>
+                </form>
+                <div id="roomList" class="list"></div>
+            </section>
+
+            <!-- Timeslots -->
+            <section class="panel">
+                <div class="panel-head">
+                    <h2 class="section-title">Timeslots</h2>
+                    <span id="slotCount" class="count">0</span>
+                </div>
+                <form id="slotForm" class="grid grid-cols-2 gap-2">
+                    <select id="sDay" class="field">
+                        <option value="Monday">Monday</option>
+                        <option value="Tuesday">Tuesday</option>
+                        <option value="Wednesday">Wednesday</option>
+                        <option value="Thursday">Thursday</option>
+                        <option value="Friday">Friday</option>
+                        <option value="Saturday">Saturday</option>
+                    </select>
+                    <select id="sPreset" class="field" aria-label="Common time ranges">
+                        <option value="">Common times…</option>
+                    </select>
+                    <label class="field-label">Start
+                        <select id="sStart" class="field tabular-nums"></select>
+                    </label>
+                    <label class="field-label">End
+                        <select id="sEnd" class="field tabular-nums"></select>
+                    </label>
+                    <button type="submit" class="btn-secondary col-span-2">Add timeslot</button>
+                </form>
+                <div id="slotList" class="list"></div>
+            </section>
+        </div>
+
+        <!-- Output View -->
+        <div id="viewOutput" class="hidden flex flex-col gap-6">
+            <div id="statsBar" class="hidden stats-bar">
+                <div><div class="stat-label">Status</div><div class="font-semibold">Solved</div></div>
+                <div><div class="stat-label">Time</div><div id="statTime" class="font-semibold tabular-nums">0 ms</div></div>
+                <div><div class="stat-label">Backtracks</div><div id="statBacktracks" class="font-semibold tabular-nums">0</div></div>
+                <div><div class="stat-label">Method</div><div id="statMethod" class="font-semibold">-</div></div>
+                <label class="sm:ml-auto flex flex-col gap-1">
+                    <span class="stat-label">View</span>
+                    <select id="cohortFilter" onchange="renderTimetable(currentSchedule)" class="field">
+                        <option value="">All cohorts</option>
+                    </select>
+                </label>
+            </div>
+            <div id="staleNotice" class="hidden notice">
+                Inputs changed since this timetable was generated. Generate it again to refresh.
+            </div>
+
+            <div id="timetableContainer" class="flex flex-col gap-8">
+                <div class="border border-neutral-200 p-12 text-center text-sm text-neutral-500">
+                    No timetable yet. Click "Generate schedule" to build one.
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="site-footer">
+            <div class="flex items-center gap-3">
+                <img src="{{ url_for('static', filename='img/sau-emblem.png') }}" alt="" class="h-7 w-auto">
+                <span>South Asian University, New Delhi</span>
+            </div>
+            <span>Timetable generated with backtracking search and forward checking</span>
+        </footer>
+
+    </div>
+
+    <!-- Frontend Script -->
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
