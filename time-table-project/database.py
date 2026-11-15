@@ -12,6 +12,62 @@ def get_connection():
     return conn
 
 
+def _num(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def course_hours(c):
+    """(lecture_duration, lecture_hours, lab_duration, lab_hours) in hours for a course dict.
+    Courses saved before hours existed (sessionsPerWeek + requiresLab) become 1-hour meetings."""
+    if any(k in c for k in ("lectureHours", "labHours")):
+        return (_num(c.get("lectureDuration")), _num(c.get("lectureHours")),
+                _num(c.get("labDuration")), _num(c.get("labHours")))
+    n = int(_num(c.get("sessionsPerWeek"), 1)) or 1
+    return (0.0, 0.0, 1.0, float(n)) if c.get("requiresLab") else (1.0, float(n), 0.0, 0.0)
+
+
+def _insert_course(cursor, course_id, c, cohort_str):
+    lec_d, lec_h, lab_d, lab_h = course_hours(c)
+    sessions = (int(lec_h // lec_d) if lec_d else 0) + (int(lab_h // lab_d) if lab_d else 0)
+    cursor.execute(
+        """INSERT INTO courses
+           (id, code, name, instructor, cohort, students, requires_lab, sessions_per_week,
+            lecture_duration, lecture_hours, lab_duration, lab_hours)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            course_id,
+            str(c["code"]).strip(),
+            str(c.get("name", "")).strip(),
+            str(c["instructor"]).strip(),
+            cohort_str,
+            int(c["students"]),
+            1 if lab_h > 0 else 0,
+            max(sessions, 1),
+            lec_d, lec_h, lab_d, lab_h,
+        )
+    )
+
+
+def _migrate_course_hours(cursor):
+    """Adds the lecture/practical hour columns to databases created by older versions
+    and fills them from the old sessions_per_week / requires_lab values."""
+    existing = {row[1] for row in cursor.execute("PRAGMA table_info(courses)").fetchall()}
+    for column in ("lecture_duration", "lecture_hours", "lab_duration", "lab_hours"):
+        if column not in existing:
+            cursor.execute(f"ALTER TABLE courses ADD COLUMN {column} REAL")
+    cursor.execute("""
+        UPDATE courses SET
+            lecture_duration = CASE WHEN requires_lab = 1 THEN 0 ELSE 1 END,
+            lecture_hours    = CASE WHEN requires_lab = 1 THEN 0 ELSE sessions_per_week END,
+            lab_duration     = CASE WHEN requires_lab = 1 THEN 1 ELSE 0 END,
+            lab_hours        = CASE WHEN requires_lab = 1 THEN sessions_per_week ELSE 0 END
+        WHERE lecture_hours IS NULL AND lab_hours IS NULL
+    """)
+
+
 def init_db(default_rooms, default_timeslots, default_courses):
     """Initializes database tables and seeds default Monsoon 2026 data if empty."""
     with get_connection() as conn:
@@ -45,9 +101,14 @@ def init_db(default_rooms, default_timeslots, default_courses):
                 cohort TEXT NOT NULL,
                 students INTEGER NOT NULL,
                 requires_lab INTEGER NOT NULL DEFAULT 0,
-                sessions_per_week INTEGER NOT NULL DEFAULT 1
+                sessions_per_week INTEGER NOT NULL DEFAULT 1,
+                lecture_duration REAL,
+                lecture_hours REAL,
+                lab_duration REAL,
+                lab_hours REAL
             )
         """)
+        _migrate_course_hours(cursor)
 
         # 4. Saved Schedules Table (stores latest solved JSON)
         cursor.execute("""
@@ -77,21 +138,7 @@ def init_db(default_rooms, default_timeslots, default_courses):
                 )
             for c in default_courses:
                 cohort_val = ", ".join(c["cohorts"]) if isinstance(c.get("cohorts"), list) else str(c.get("cohort", ""))
-                cursor.execute(
-                    """INSERT INTO courses 
-                       (id, code, name, instructor, cohort, students, requires_lab, sessions_per_week) 
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        c["id"],
-                        c["code"],
-                        c.get("name", ""),
-                        c["instructor"],
-                        cohort_val,
-                        c["students"],
-                        1 if c.get("requiresLab") else 0,
-                        c.get("sessionsPerWeek", 1)
-                    )
-                )
+                _insert_course(cursor, c["id"], c, cohort_val)
         conn.commit()
 
 
@@ -123,7 +170,11 @@ def load_state():
                 "cohorts": cohort_list,
                 "students": row["students"],
                 "requiresLab": bool(row["requires_lab"]),
-                "sessionsPerWeek": row["sessions_per_week"]
+                "sessionsPerWeek": row["sessions_per_week"],
+                "lectureDuration": row["lecture_duration"] or 0,
+                "lectureHours": row["lecture_hours"] or 0,
+                "labDuration": row["lab_duration"] or 0,
+                "labHours": row["lab_hours"] or 0,
             })
 
         sched_row = cursor.execute("SELECT schedule_json, stats_json FROM saved_schedules WHERE id = 1").fetchone()
@@ -167,21 +218,7 @@ def save_resources(rooms, timeslots, courses):
             else:
                 cohort_str = str(c.get("cohort", "")).strip()
 
-            cursor.execute(
-                """INSERT INTO courses 
-                   (id, code, name, instructor, cohort, students, requires_lab, sessions_per_week) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    course_id,
-                    str(c["code"]).strip(),
-                    str(c.get("name", "")).strip(),
-                    str(c["instructor"]).strip(),
-                    cohort_str,
-                    int(c["students"]),
-                    1 if c.get("requiresLab") else 0,
-                    int(c.get("sessionsPerWeek", 1))
-                )
-            )
+            _insert_course(cursor, course_id, c, cohort_str)
         conn.commit()
 
 

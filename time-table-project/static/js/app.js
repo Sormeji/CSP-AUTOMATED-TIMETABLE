@@ -3,15 +3,20 @@ let timeslots = [];
 let courses = [];
 let currentSchedule = null;
 let nextCourseId = 1;
+let editingCourse = -1;  // index of the course being edited, -1 when adding
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const DEFAULT_COHORTS = ["1MSc1", "MTI", "IMT3", "MSc3", "MCA3", "PhD", "MT3", "MCA1", "MSc1/IMTI"];
 const LUNCH = { start: 13 * 60, end: 14 * 60, label: "13:00-14:00" };
 
-const TIME_OPTIONS = Array.from({ length: 21 }, (_, i) => {
-    const minutes = 8 * 60 + i * 30;
-    return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
-});
+const fmtTime = (minutes) => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+const toMinutes = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
+const fmtHours = (h) => `${Number(h.toFixed(2))} h`;
+
+// 08:00, 08:30, ... 20:00
+const TIME_OPTIONS = Array.from({ length: 25 }, (_, i) => fmtTime(8 * 60 + i * 30));
+// 0.5 h, 1 h, ... 4 h
+const DURATION_OPTIONS = Array.from({ length: 8 }, (_, i) => (i + 1) / 2);
 
 // Load Initial Dataset on Startup
 document.addEventListener("DOMContentLoaded", async () => {
@@ -24,7 +29,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const data = await response.json();
         rooms = data.rooms || [];
         timeslots = data.timeslots || [];
-        courses = (data.courses || []).map(c => ({ ...c, id: "C" + nextCourseId++, cohorts: cohortsOf(c) }));
+        courses = (data.courses || []).map(c => ({ ...withHours(c), id: "C" + nextCourseId++, cohorts: cohortsOf(c) }));
         predefinedTimes = data.predefinedTimes || [];
         savedSchedule = data.schedule || null;
         savedStats = data.stats || null;
@@ -33,21 +38,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     setupTimePickers(predefinedTimes);
+    setupCourseHours();
+    setupBulkSlots();
     renderCohortChoices();
     renderAll();
     setupFormListeners();
 
     if (savedSchedule) {
         currentSchedule = savedSchedule;
-        if (savedStats) {
-            const statTime = document.getElementById('statTime');
-            const statBacktracks = document.getElementById('statBacktracks');
-            const statMethod = document.getElementById('statMethod');
-            if (statTime) statTime.innerText = `${savedStats.timeMs} ms`;
-            if (statBacktracks) statBacktracks.innerText = savedStats.backtracks;
-            if (statMethod) statMethod.innerText = savedStats.method || 'backtracking';
-            document.getElementById('statsBar')?.classList.remove('hidden');
-        }
+        if (savedStats) showStats(savedStats);
         document.getElementById('exportBtn')?.classList.remove('hidden');
         document.getElementById('exportCsvBtn')?.classList.remove('hidden');
         populateCohortFilter(savedSchedule);
@@ -70,6 +69,71 @@ async function persistChanges() {
 function cohortsOf(item) {
     if (Array.isArray(item.cohorts) && item.cohorts.length) return item.cohorts;
     return String(item.cohort || '').split(',').map(s => s.trim()).filter(Boolean);
+}
+
+/** Fill in lecture/practical hours for courses saved before they existed (1-hour meetings). */
+function withHours(c) {
+    if (c.lectureHours != null || c.labHours != null) {
+        return { ...c, lectureDuration: +c.lectureDuration || 0, lectureHours: +c.lectureHours || 0,
+                 labDuration: +c.labDuration || 0, labHours: +c.labHours || 0 };
+    }
+    const n = +c.sessionsPerWeek || 1;
+    return c.requiresLab
+        ? { ...c, lectureDuration: 0, lectureHours: 0, labDuration: 1, labHours: n }
+        : { ...c, lectureDuration: 1, lectureHours: n, labDuration: 0, labHours: 0 };
+}
+
+/** How a course's weekly hours split into meetings, or an error message. */
+function coursePlan(c) {
+    const parts = [];
+    for (const [word, dur, hours] of [["lecture", c.lectureDuration, c.lectureHours], ["practical", c.labDuration, c.labHours]]) {
+        if (!hours) continue;
+        if (hours < 0 || Math.round(hours * 2) !== hours * 2) return { error: `${word[0].toUpperCase() + word.slice(1)} hours per week must be in steps of 0.5.` };
+        if (!dur) return { error: `Choose how long each ${word} lasts.` };
+        const count = hours / dur;
+        if (!Number.isInteger(count)) {
+            return { error: `${fmtHours(hours)} of ${word}s a week doesn't split into ${fmtHours(dur)} ${word}s. Use a multiple of ${fmtHours(dur)}.` };
+        }
+        parts.push({ word, dur, hours, count });
+    }
+    if (!parts.length) return { error: "Give the course some lecture or practical hours per week." };
+    return { parts };
+}
+
+function describePlan(plan) {
+    return plan.parts.map(p => `${p.count} ${p.word}${p.count > 1 ? 's' : ''} × ${fmtHours(p.dur)}`).join(' + ');
+}
+
+function readCourseHours() {
+    return {
+        lectureDuration: parseFloat(document.getElementById('cLecDur').value) || 0,
+        lectureHours: parseFloat(document.getElementById('cLecHours').value) || 0,
+        labDuration: parseFloat(document.getElementById('cLabDur').value) || 0,
+        labHours: parseFloat(document.getElementById('cLabHours').value) || 0,
+    };
+}
+
+function setupCourseHours() {
+    document.querySelectorAll('.duration-select').forEach(sel => {
+        sel.innerHTML = DURATION_OPTIONS.map(h => `<option value="${h}">${fmtHours(h)}</option>`).join('');
+    });
+    resetCourseHours();
+    ['cLecDur', 'cLecHours', 'cLabDur', 'cLabHours'].forEach(id =>
+        document.getElementById(id)?.addEventListener('input', updatePlanPreview));
+}
+
+function resetCourseHours() {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    set('cLecDur', 1.5); set('cLecHours', 3); set('cLabDur', 2); set('cLabHours', 0);
+    updatePlanPreview();
+}
+
+function updatePlanPreview() {
+    const line = document.getElementById('cPlan');
+    if (!line || !document.getElementById('cLecDur')) return;
+    const plan = coursePlan(readCourseHours());
+    line.classList.toggle('error', !!plan.error);
+    line.textContent = plan.error || `Each week: ${describePlan(plan)}`;
 }
 
 function parseRange(time) {
@@ -136,13 +200,17 @@ function renderCourses() {
     }
 
     list.innerHTML = courses.map((c, i) => `
-        <div class="row-item">
+        <div class="row-item ${i === editingCourse ? 'editing' : ''}">
             <div>
-                <div><span class="font-semibold">${escapeHtml(c.code)}</span> ${escapeHtml(c.name || '')} ${c.requiresLab ? '<span class="tag ml-1">Lab</span>' : ''}</div>
-                <div class="text-neutral-500 mt-0.5">${escapeHtml(c.instructor || '')} · ${escapeHtml(cohortsOf(c).join(', '))}</div>
-                <div class="text-neutral-500">${c.students || 0} students · ${c.sessionsPerWeek || 1}× per week</div>
+                <div><span class="font-semibold">${escapeHtml(c.code)}</span> ${escapeHtml(c.name || '')} ${c.labHours > 0 ? '<span class="tag ml-1">Lab</span>' : ''}</div>
+                <div class="text-neutral-500 mt-0.5">${escapeHtml(c.instructor || '')} · ${escapeHtml(cohortsOf(c).join(', '))} · ${c.students || 0} students</div>
+                ${c.lectureHours > 0 ? `<div class="text-neutral-500">Lecture: ${fmtHours(c.lectureHours)}/week in ${fmtHours(c.lectureDuration)} classes</div>` : ''}
+                ${c.labHours > 0 ? `<div class="text-neutral-500">Practical: ${fmtHours(c.labHours)}/week in ${fmtHours(c.labDuration)} labs</div>` : ''}
             </div>
-            <button onclick="deleteCourse(${i})" class="delete-btn" aria-label="Remove course">×</button>
+            <div class="row-actions">
+                <button onclick="editCourse(${i})" class="edit-btn" aria-label="Edit ${escapeHtml(c.code)}">Edit</button>
+                <button onclick="deleteCourse(${i})" class="delete-btn" aria-label="Remove ${escapeHtml(c.code)}">×</button>
+            </div>
         </div>
     `).join('');
 }
@@ -168,6 +236,17 @@ function renderRooms() {
     `).join('');
 }
 
+/** Back-to-back or overlapping ranges merged, e.g. [[570,600],[600,630]] -> [[570,630]]. */
+function mergeRanges(ranges) {
+    const out = [];
+    [...ranges].sort((a, b) => a.start - b.start).forEach(r => {
+        const last = out[out.length - 1];
+        if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
+        else out.push({ start: r.start, end: r.end });
+    });
+    return out;
+}
+
 function renderTimeslots() {
     const list = document.getElementById('slotList');
     if (!list) return;
@@ -178,16 +257,119 @@ function renderTimeslots() {
         return;
     }
 
-    const ordered = timeslots
-        .map((t, i) => ({ t, i, range: parseRange(t.time) }))
-        .sort((a, b) => DAYS.indexOf(a.t.day) - DAYS.indexOf(b.t.day) || (a.range?.start ?? 0) - (b.range?.start ?? 0));
+    const days = [...new Set(timeslots.map(t => t.day))].sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b));
+    list.innerHTML = days.map(day => {
+        const slots = timeslots
+            .map((t, i) => ({ t, i, range: parseRange(t.time) }))
+            .filter(x => x.t.day === day)
+            .sort((a, b) => (a.range?.start ?? 0) - (b.range?.start ?? 0));
+        const windows = mergeRanges(slots.map(x => x.range).filter(Boolean));
+        const total = windows.reduce((m, w) => m + w.end - w.start, 0);
+        return `
+            <div class="day-group">
+                <div class="day-group-head">
+                    <span class="font-semibold">${escapeHtml(day)}</span>
+                    <button onclick="deleteDay('${escapeHtml(day)}')" class="link-btn text-xs" aria-label="Remove all ${escapeHtml(day)} slots">Remove day</button>
+                </div>
+                <div class="day-windows">${windows.map(w => `${fmtTime(w.start)}–${fmtTime(w.end)}`).join(', ')} · ${fmtHours(total / 60)}</div>
+                <div class="slot-chips">
+                    ${slots.map(({ t, i }) => `<span class="slot-chip">${escapeHtml(t.time)}<button onclick="deleteSlot(${i})" aria-label="Remove ${escapeHtml(day)} ${escapeHtml(t.time)}">×</button></span>`).join('')}
+                </div>
+            </div>`;
+    }).join('');
+}
 
-    list.innerHTML = ordered.map(({ t, i }) => `
-        <div class="row-item items-center">
-            <span><span class="inline-block w-24">${escapeHtml(t.day)}</span><span class="tabular-nums text-neutral-500">${escapeHtml(t.time)}</span></span>
-            <button onclick="deleteSlot(${i})" class="delete-btn" aria-label="Remove timeslot">×</button>
-        </div>
+/** Every 30-minute slot between start and end (minutes) for the chosen days. */
+function halfHourSlots(days, start, end, skipLunch) {
+    const out = [];
+    days.forEach(day => {
+        for (let m = start; m + 30 <= end; m += 30) {
+            if (skipLunch && m < LUNCH.end && LUNCH.start < m + 30) continue;
+            out.push({ day, time: `${fmtTime(m)}-${fmtTime(m + 30)}` });
+        }
+    });
+    return out;
+}
+
+function setupBulkSlots() {
+    const daysBox = document.getElementById('bDays');
+    const all = document.getElementById('bAllDays');
+    const start = document.getElementById('bStart');
+    const end = document.getElementById('bEnd');
+    const skip = document.getElementById('bSkipLunch');
+    if (!daysBox || !start || !end) return;
+
+    const weekdays = DAYS.slice(0, 5);
+    daysBox.innerHTML = DAYS.map(d => `
+        <label><input type="checkbox" name="bDay" value="${d}" class="checkbox" ${weekdays.includes(d) ? 'checked' : ''}> ${d.slice(0, 3)}</label>
     `).join('');
+    start.innerHTML = TIME_OPTIONS.slice(0, -1).map(t => `<option>${t}</option>`).join('');
+    end.innerHTML = TIME_OPTIONS.slice(1).map(t => `<option>${t}</option>`).join('');
+    start.value = "09:30";
+    end.value = "17:30";
+
+    const dayBoxes = () => [...daysBox.querySelectorAll('input[name="bDay"]')];
+    const syncAll = () => {
+        const boxes = dayBoxes();
+        all.checked = boxes.every(b => b.checked);
+        all.indeterminate = !all.checked && boxes.some(b => b.checked);
+    };
+    all.addEventListener('change', () => { dayBoxes().forEach(b => { b.checked = all.checked; }); preview(); });
+    daysBox.addEventListener('change', () => { syncAll(); preview(); });
+    [start, end, skip].forEach(el => el?.addEventListener('change', preview));
+
+    function pending() {
+        const days = dayBoxes().filter(b => b.checked).map(b => b.value);
+        const s = toMinutes(start.value), e = toMinutes(end.value);
+        if (!days.length) return { error: 'Pick at least one day.' };
+        if (e <= s) return { error: '"To" must be later than "From".' };
+        const all = halfHourSlots(days, s, e, skip?.checked);
+        const fresh = all.filter(n => !timeslots.some(t => t.day === n.day && t.time.replace(/\s+/g, '') === n.time));
+        return { days, all, fresh };
+    }
+    function preview() {
+        const line = document.getElementById('bPreview');
+        if (!line) return;
+        const p = pending();
+        line.classList.toggle('error', !!p.error);
+        if (p.error) { line.textContent = p.error; return; }
+        const perDay = p.all.length / p.days.length;
+        const dup = p.all.length - p.fresh.length;
+        line.textContent = `${perDay} slots × ${p.days.length} day${p.days.length > 1 ? 's' : ''} = ${p.all.length}` +
+            (dup ? ` (${dup} already added)` : '');
+    }
+    syncAll();
+    preview();
+
+    document.getElementById('bulkSlotForm')?.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const p = pending();
+        if (p.error) { alert(p.error); return; }
+        if (!p.fresh.length) { alert('All of those slots already exist.'); return; }
+        timeslots.push(...p.fresh);
+        renderTimeslots();
+        preview();
+        markStale();
+        persistChanges();
+    });
+    window.refreshBulkPreview = preview;
+}
+
+function clearSlots() {
+    if (!timeslots.length || !confirm('Remove all timeslots?')) return;
+    timeslots = [];
+    renderTimeslots();
+    window.refreshBulkPreview?.();
+    markStale();
+    persistChanges();
+}
+
+function deleteDay(day) {
+    timeslots = timeslots.filter(t => t.day !== day);
+    renderTimeslots();
+    window.refreshBulkPreview?.();
+    markStale();
+    persistChanges();
 }
 
 function setupFormListeners() {
@@ -204,18 +386,32 @@ function setupFormListeners() {
                 return;
             }
 
-            courses.push({
-                id: "C" + nextCourseId++,
+            const hours = readCourseHours();
+            const plan = coursePlan(hours);
+            if (plan.error) {
+                alert(plan.error);
+                return;
+            }
+            // Only keep the length of a part that is actually used
+            if (!hours.lectureHours) hours.lectureDuration = 0;
+            if (!hours.labHours) hours.labDuration = 0;
+
+            const course = {
+                id: editingCourse >= 0 ? courses[editingCourse].id : "C" + nextCourseId++,
                 code: document.getElementById('cCode').value.trim(),
                 name: document.getElementById('cName').value.trim(),
                 instructor: document.getElementById('cFaculty').value.trim(),
                 cohorts,
                 students: parseInt(document.getElementById('cStudents').value) || 0,
-                sessionsPerWeek: parseInt(document.getElementById('cPerWeek')?.value) || 1,
-                requiresLab: document.getElementById('cLab').checked
-            });
-            courseForm.reset();
-            renderCohortChoices();
+                ...hours,
+                requiresLab: hours.labHours > 0,
+                sessionsPerWeek: plan.parts.reduce((n, p) => n + p.count, 0)
+            };
+            const wasEditing = editingCourse >= 0;
+            if (wasEditing) courses[editingCourse] = course;
+            else courses.push(course);
+            showToast(`${wasEditing ? 'Saved changes to' : 'Added'} ${course.code}: ${describePlan(plan)} per week.`);
+            endCourseEdit();
             renderCourses();
             markStale();
             persistChanges();
@@ -261,15 +457,115 @@ function setupFormListeners() {
             }
             timeslots.push({ day, time });
             renderTimeslots();
+            window.refreshBulkPreview?.();
             markStale();
             persistChanges();
         });
     }
 }
 
-function deleteCourse(i) { courses.splice(i, 1); renderCourses(); markStale(); persistChanges(); }
+function deleteCourse(i) {
+    const c = courses[i];
+    if (!c) return;
+    if (!confirm(`Delete ${c.code}${c.name ? ' – ' + c.name : ''}? This removes all its lectures and practicals from the timetable.`)) return;
+    courses.splice(i, 1);
+    if (editingCourse === i) endCourseEdit();
+    else if (editingCourse > i) editingCourse--;
+    renderCourses();
+    markStale();
+    persistChanges();
+    showToast(`Deleted ${c.code}.`);
+}
+
+/** Load a course into the form; the submit button then saves instead of adding. */
+function editCourse(i) {
+    const c = courses[i];
+    if (!c) return;
+    editingCourse = i;
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    set('cCode', c.code || '');
+    set('cName', c.name || '');
+    set('cFaculty', c.instructor || '');
+    set('cStudents', c.students || 1);
+    set('cLecDur', c.lectureDuration || 1.5);
+    set('cLecHours', c.lectureHours || 0);
+    set('cLabDur', c.labDuration || 2);
+    set('cLabHours', c.labHours || 0);
+    renderCohortChoices();
+    const mine = new Set(cohortsOf(c));
+    document.querySelectorAll('input[name="cCohorts"]').forEach(cb => { cb.checked = mine.has(cb.value); });
+    updatePlanPreview();
+    document.getElementById('courseSubmit').textContent = `Save changes to ${c.code}`;
+    document.getElementById('courseCancel')?.classList.remove('hidden');
+    renderCourses();
+    document.getElementById('courseForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.getElementById('cCode')?.focus({ preventScroll: true });
+}
+
+function endCourseEdit() {
+    editingCourse = -1;
+    document.getElementById('courseForm')?.reset();
+    resetCourseHours();
+    renderCohortChoices();
+    document.querySelectorAll('input[name="cCohorts"]').forEach(cb => { cb.checked = false; });
+    const btn = document.getElementById('courseSubmit');
+    if (btn) btn.textContent = 'Add course';
+    document.getElementById('courseCancel')?.classList.add('hidden');
+}
+
+function cancelEditCourse() { endCourseEdit(); renderCourses(); }
+
+let toastTimer = null;
+function showToast(message) {
+    const el = document.getElementById('toast');
+    if (!el) return;
+    el.textContent = message;
+    el.classList.remove('hidden');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.add('hidden'), 3500);
+}
+
+function renderChecks(stats) {
+    const panel = document.getElementById('checksPanel');
+    const body = document.getElementById('checksBody');
+    const summary = document.getElementById('checksSummary');
+    const checks = stats?.checks;
+    if (!panel || !body) return;
+    if (!checks?.length) { panel.classList.add('hidden'); return; }
+    const short = (d) => d.slice(0, 3);
+    const part = (p) => {
+        if (!p || !p.required) return '<span class="ok">–</span>';
+        const cls = p.scheduled < p.required ? 'bad' : '';
+        return `<span class="${cls}">${fmtHours(p.scheduled)} / ${fmtHours(p.required)}</span>
+                <div class="days">${[...p.days].sort((x, y) => DAYS.indexOf(x) - DAYS.indexOf(y)).map(short).join(', ')}</div>`;
+    };
+    const withIssues = checks.filter(c => c.issues.length);
+    summary.textContent = withIssues.length
+        ? `· ${withIssues.length} course${withIssues.length > 1 ? 's' : ''} need attention`
+        : `· all ${checks.length} courses got their full hours, lectures and practicals on separate days`;
+    body.innerHTML = checks.map(c => `
+        <tr>
+            <td><span class="font-semibold">${escapeHtml(c.code)}</span> <span class="text-neutral-500">${escapeHtml(c.name || '')}</span></td>
+            <td>${escapeHtml(c.cohort)}</td>
+            <td>${part(c.lecture)}</td>
+            <td>${part(c.lab)}</td>
+            <td>${c.issues.length ? c.issues.map(x => `<div class="bad">⚠ ${escapeHtml(x)}</div>`).join('') : '<span class="ok">✓ OK</span>'}</td>
+        </tr>`).join('');
+    panel.classList.remove('hidden');
+}
+
+function showStats(stats) {
+    if (!stats) return;
+    const put = (id, v) => { const el = document.getElementById(id); if (el) el.innerText = v; };
+    put('statTime', `${stats.timeMs} ms`);
+    put('statBacktracks', stats.backtracks);
+    put('statMethod', stats.method || 'backtracking');
+    put('statSeed', stats.seed != null ? `#${stats.seed}` : '-');
+    document.getElementById('statsBar')?.classList.remove('hidden');
+    renderChecks(stats);
+}
 function deleteRoom(i) { rooms.splice(i, 1); renderRooms(); markStale(); persistChanges(); }
-function deleteSlot(i) { timeslots.splice(i, 1); renderTimeslots(); markStale(); persistChanges(); }
+function deleteSlot(i) { timeslots.splice(i, 1); renderTimeslots(); window.refreshBulkPreview?.(); markStale(); persistChanges(); }
 
 function markStale() {
     if (currentSchedule) document.getElementById('staleNotice')?.classList.remove('hidden');
@@ -313,11 +609,8 @@ async function runSolver() {
 
         if (response.ok && data.success) {
             currentSchedule = data.schedule;
-            document.getElementById('statTime').innerText = `${data.stats.timeMs} ms`;
-            document.getElementById('statBacktracks').innerText = data.stats.backtracks;
-            const statMethod = document.getElementById('statMethod');
-            if (statMethod) statMethod.innerText = data.stats.method || 'backtracking';
-            document.getElementById('statsBar')?.classList.remove('hidden');
+            showStats(data.stats);
+            showToast('New timetable generated. Click "Generate schedule" again for a different arrangement.');
             document.getElementById('exportBtn')?.classList.remove('hidden');
             document.getElementById('exportCsvBtn')?.classList.remove('hidden');
             document.getElementById('staleNotice')?.classList.add('hidden');
@@ -352,6 +645,10 @@ function populateCohortFilter(schedule) {
     if (cohorts.includes(previous)) select.value = previous;
 }
 
+function kindOf(item) {
+    return item.kind || (item.requiresLab ? 'lab' : 'lecture');
+}
+
 function buildTimetableHTML(schedule) {
     const items = Object.values(schedule || {});
     const filter = document.getElementById('cohortFilter')?.value || '';
@@ -360,23 +657,55 @@ function buildTimetableHTML(schedule) {
 
     let html = '';
     DAYS.forEach(day => {
-        const dayItems = visible.filter(item => item.slot?.day === day);
+        const dayItems = visible
+            .filter(item => item.slot?.day === day)
+            .map(item => ({ item, range: parseRange(item.slot.time) }))
+            .filter(x => x.range);
         if (dayItems.length === 0) return;
 
-        const rows = new Map();
-        timeslots.filter(t => t.day === day).forEach(t => {
-            const r = parseRange(t.time);
-            if (r) rows.set(`${r.start}-${r.end}`, { ...r, label: t.time.replace(/\s+/g, '') });
-        });
-        dayItems.forEach(item => {
-            const r = parseRange(item.slot.time);
-            if (r) rows.set(`${r.start}-${r.end}`, { ...r, label: item.slot.time.replace(/\s+/g, '') });
-        });
-        const sorted = [...rows.values()].sort((a, b) => a.start - b.start || a.end - b.end);
+        // Rows are the stretches between every class start/end time, so a 2 h practical
+        // next to two 1 h lectures spans two rows.
+        const bounds = new Set();
+        dayItems.forEach(({ range }) => { bounds.add(range.start); bounds.add(range.end); });
+        const lunchFree = !dayItems.some(({ range }) => range.start < LUNCH.end && LUNCH.start < range.end);
+        const hasBefore = dayItems.some(({ range }) => range.end <= LUNCH.start);
+        const hasAfter = dayItems.some(({ range }) => range.start >= LUNCH.end);
+        const showLunch = lunchFree && hasBefore && hasAfter;
+        if (showLunch) { bounds.add(LUNCH.start); bounds.add(LUNCH.end); }
+        const edges = [...bounds].sort((a, b) => a - b);
+        const rows = edges.slice(0, -1).map((start, i) => ({
+            start, end: edges[i + 1],
+            lunch: showLunch && start === LUNCH.start,
+        }));
 
-        const lunchFree = !sorted.some(r => r.start < LUNCH.end && LUNCH.start < r.end);
-        const lunchAt = sorted.findIndex(r => r.start >= LUNCH.end);
-        if (lunchFree && lunchAt > 0) sorted.splice(lunchAt, 0, { lunch: true });
+        const card = (item) => `
+            <div class="tt-class">
+                <div class="flex justify-between items-start gap-2">
+                    <span class="font-bold">${escapeHtml(item.courseCode)}</span>
+                    <span class="tag">${kindOf(item) === 'lab' ? 'Practical' : 'Lecture'}</span>
+                </div>
+                <div class="tt-name">${escapeHtml(item.courseName || '')}</div>
+                <div class="tt-meta">${escapeHtml(item.slot.time)} · ${escapeHtml(item.room?.id || '')} · ${escapeHtml(item.instructor || '')}</div>
+            </div>`;
+
+        const body = rows.map(row => {
+            if (row.lunch) {
+                return `<tr class="tt-lunch"><td class="tt-time">${LUNCH.label}</td><td colspan="${columns.length}">Lunch break</td></tr>`;
+            }
+            const cells = columns.map(cohort => {
+                const mine = dayItems.filter(x => cohortsOf(x.item).includes(cohort));
+                const starting = mine.filter(x => x.range.start === row.start);
+                if (starting.length) {
+                    const end = Math.max(...starting.map(x => x.range.end));
+                    const span = rows.filter(r => r.start >= row.start && r.end <= end).length;
+                    return `<td rowspan="${span}">${starting.map(x => card(x.item)).join('')}</td>`;
+                }
+                // Covered by a class that started in an earlier row: the rowspan already fills it
+                if (mine.some(x => x.range.start < row.start && row.start < x.range.end)) return '';
+                return `<td class="tt-empty">–</td>`;
+            }).join('');
+            return `<tr><td class="tt-time">${fmtTime(row.start)}-${fmtTime(row.end)}</td>${cells}</tr>`;
+        }).join('');
 
         html += `
             <section class="tt-day">
@@ -384,31 +713,7 @@ function buildTimetableHTML(schedule) {
                 <div class="overflow-x-auto">
                     <table class="tt-grid" style="min-width: ${7 + columns.length * 8}rem">
                         <thead><tr><th class="tt-time">Time</th>${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
-                        <tbody>
-                            ${sorted.map(row => row.lunch ? `
-                                <tr class="tt-lunch"><td class="tt-time">${LUNCH.label}</td><td colspan="${columns.length}">Lunch break</td></tr>
-                            ` : `
-                                <tr>
-                                    <td class="tt-time">${escapeHtml(row.label)}</td>
-                                    ${columns.map(cohort => {
-                                        const here = dayItems.filter(item => {
-                                            const r = parseRange(item.slot.time);
-                                            return r && r.start === row.start && r.end === row.end && cohortsOf(item).includes(cohort);
-                                        });
-                                        if (here.length === 0) return `<td class="tt-empty">–</td>`;
-                                        return `<td>${here.map(item => `
-                                            <div class="tt-class">
-                                                <div class="flex justify-between items-start gap-2">
-                                                    <span class="font-bold">${escapeHtml(item.courseCode)}</span>
-                                                    <span class="tag">${item.requiresLab ? 'Practical' : 'Lecture'}</span>
-                                                </div>
-                                                <div class="tt-name">${escapeHtml(item.courseName || '')}</div>
-                                                <div class="tt-meta">${escapeHtml(item.room?.id || '')} · ${escapeHtml(item.instructor || '')}</div>
-                                            </div>`).join('')}</td>`;
-                                    }).join('')}
-                                </tr>
-                            `).join('')}
-                        </tbody>
+                        <tbody>${body}</tbody>
                     </table>
                 </div>
             </section>
@@ -548,9 +853,13 @@ function exportCSV() {
     const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const rows = Object.values(currentSchedule)
         .sort((a, b) => DAYS.indexOf(a.slot.day) - DAYS.indexOf(b.slot.day) || a.slot.start - b.slot.start)
-        .map(item => [item.slot.day, item.slot.time, item.room?.id, item.courseCode, item.courseName,
-                      item.instructor, cohortsOf(item).join('; '), item.students, item.requiresLab ? 'Yes' : 'No'].map(cell).join(','));
-    const csv = ["Day,Time,Room,Course Code,Course Name,Instructor,Cohort(s),Students,Requires Lab", ...rows].join('\n');
+        .map(item => {
+            const r = parseRange(item.slot.time);
+            const hours = r ? (r.end - r.start) / 60 : '';
+            return [item.slot.day, item.slot.time, hours, kindOf(item) === 'lab' ? 'Practical' : 'Lecture', item.room?.id,
+                    item.courseCode, item.courseName, item.instructor, cohortsOf(item).join('; '), item.students].map(cell).join(',');
+        });
+    const csv = ["Day,Time,Hours,Type,Room,Course Code,Course Name,Instructor,Cohort(s),Students", ...rows].join('\n');
 
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const link = document.createElement("a");

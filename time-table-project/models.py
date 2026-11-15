@@ -20,6 +20,20 @@ def parse_time_range(text: str) -> Tuple[int, int]:
     return start, end
 
 
+def format_minutes(m: int) -> str:
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def format_range(start: int, end: int) -> str:
+    return f"{format_minutes(start)}-{format_minutes(end)}"
+
+
+def format_hours(minutes: int) -> str:
+    """90 -> '1.5 h', 120 -> '2 h'."""
+    h = minutes / 60
+    return f"{h:g} h"
+
+
 def normalize(text: str) -> str:
     """Case/whitespace-insensitive key used for instructor and cohort comparisons."""
     return " ".join((text or "").split()).lower()
@@ -41,6 +55,13 @@ class ClassSession:
     students_count: int
     requires_lab: bool
     course_id: str = ""  # id of the course this meeting belongs to (courses can meet several times a week)
+    kind: str = ""       # "lecture" or "lab"; meetings of the same course AND kind go on different days
+    duration: int = 0    # length in minutes; 0 means "occupies exactly one of the given timeslots"
+
+    @cached_property
+    def group_key(self) -> Tuple[str, str]:
+        """Meetings sharing this key (same course, same kind) must fall on different days."""
+        return (self.course_id, self.kind)
 
     @cached_property
     def instructor_key(self) -> str:
@@ -67,6 +88,10 @@ class Timeslot:
     def create(cls, id: str, day: str, time: str) -> "Timeslot":
         start, end = parse_time_range(time)
         return cls(id=id, day=day, time=time.strip(), start=start, end=end)
+
+    @property
+    def minutes(self) -> int:
+        return self.end - self.start
 
     def overlaps(self, other: "Timeslot") -> bool:
         """Two slots clash if they are on the same day and their time ranges intersect."""

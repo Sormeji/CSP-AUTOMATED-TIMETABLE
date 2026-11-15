@@ -39,7 +39,7 @@
             <div class="flex flex-wrap items-center gap-2">
                 <button id="exportCsvBtn" onclick="exportCSV()" class="btn-secondary hidden">Export CSV</button>
                 <button id="exportBtn" onclick="exportHTML()" class="btn-secondary hidden">Print / PDF</button>
-                <button id="solveBtn" onclick="runSolver()" class="btn-primary">Generate schedule</button>
+                <button id="solveBtn" onclick="runSolver()" class="btn-primary" title="Each click builds a new random arrangement">Generate schedule</button>
             </div>
         </header>
 
@@ -68,22 +68,40 @@
                     <input id="cCode" placeholder="Code (e.g. FAI)" required class="field">
                     <input id="cName" placeholder="Course title" required class="field">
                     <input id="cFaculty" placeholder="Instructor" required class="field col-span-2">
-                    <label class="field-label">Students
+                    <label class="field-label col-span-2">Students
                         <input id="cStudents" type="number" min="1" value="30" required class="field">
                     </label>
-                    <label class="field-label">Sessions / week
-                        <input id="cPerWeek" type="number" min="1" max="7" value="1" required class="field">
-                    </label>
+
+                    <fieldset class="col-span-2 hours-box">
+                        <legend class="field-label px-1">Lecture</legend>
+                        <label class="field-label">Hours per lecture
+                            <select id="cLecDur" class="field tabular-nums duration-select"></select>
+                        </label>
+                        <label class="field-label">Lecture hours / week
+                            <input id="cLecHours" type="number" min="0" max="40" step="0.5" value="3" class="field tabular-nums">
+                        </label>
+                    </fieldset>
+
+                    <fieldset class="col-span-2 hours-box">
+                        <legend class="field-label px-1">Practical (needs a lab)</legend>
+                        <label class="field-label">Hours per practical
+                            <select id="cLabDur" class="field tabular-nums duration-select"></select>
+                        </label>
+                        <label class="field-label">Practical hours / week
+                            <input id="cLabHours" type="number" min="0" max="40" step="0.5" value="0" class="field tabular-nums">
+                        </label>
+                    </fieldset>
+                    <p id="cPlan" class="col-span-2 plan-line" aria-live="polite"></p>
 
                     <fieldset class="col-span-2 flex flex-col gap-1">
                         <legend class="field-label mb-1">Cohort(s) attending</legend>
                         <div id="cohortChoices" class="cohort-choices"></div>
                     </fieldset>
 
-                    <label class="col-span-2 flex items-center gap-2 text-sm cursor-pointer select-none">
-                        <input id="cLab" type="checkbox" class="checkbox"> Needs a lab
-                    </label>
-                    <button type="submit" class="btn-secondary col-span-2">Add course</button>
+                    <div class="col-span-2 flex gap-2">
+                        <button type="submit" id="courseSubmit" class="btn-secondary flex-1">Add course</button>
+                        <button type="button" id="courseCancel" onclick="cancelEditCourse()" class="btn-secondary hidden">Cancel</button>
+                    </div>
                 </form>
                 <div id="courseList" class="list"></div>
             </section>
@@ -111,26 +129,53 @@
                     <h2 class="section-title">Timeslots</h2>
                     <span id="slotCount" class="count">0</span>
                 </div>
-                <form id="slotForm" class="grid grid-cols-2 gap-2">
-                    <select id="sDay" class="field">
-                        <option value="Monday">Monday</option>
-                        <option value="Tuesday">Tuesday</option>
-                        <option value="Wednesday">Wednesday</option>
-                        <option value="Thursday">Thursday</option>
-                        <option value="Friday">Friday</option>
-                        <option value="Saturday">Saturday</option>
-                    </select>
-                    <select id="sPreset" class="field" aria-label="Common time ranges">
-                        <option value="">Common times…</option>
-                    </select>
-                    <label class="field-label">Start
-                        <select id="sStart" class="field tabular-nums"></select>
+                <form id="bulkSlotForm" class="grid grid-cols-2 gap-2">
+                    <div class="col-span-2 field-label">Add 30-minute slots</div>
+                    <fieldset class="col-span-2 day-choices" aria-label="Days">
+                        <label class="day-all"><input type="checkbox" id="bAllDays" class="checkbox"> Every day</label>
+                        <div id="bDays" class="day-grid"></div>
+                    </fieldset>
+                    <label class="field-label">From
+                        <select id="bStart" class="field tabular-nums"></select>
                     </label>
-                    <label class="field-label">End
-                        <select id="sEnd" class="field tabular-nums"></select>
+                    <label class="field-label">To
+                        <select id="bEnd" class="field tabular-nums"></select>
                     </label>
-                    <button type="submit" class="btn-secondary col-span-2">Add timeslot</button>
+                    <label class="col-span-2 flex items-center gap-2 text-sm cursor-pointer select-none">
+                        <input id="bSkipLunch" type="checkbox" class="checkbox" checked> Keep lunch (13:00-14:00) free
+                    </label>
+                    <p id="bPreview" class="col-span-2 plan-line"></p>
+                    <button type="submit" class="btn-secondary col-span-2">Add 30-min slots</button>
                 </form>
+
+                <details class="single-slot">
+                    <summary>Add a single custom slot</summary>
+                    <form id="slotForm" class="grid grid-cols-2 gap-2 mt-3">
+                        <select id="sDay" class="field">
+                            <option value="Monday">Monday</option>
+                            <option value="Tuesday">Tuesday</option>
+                            <option value="Wednesday">Wednesday</option>
+                            <option value="Thursday">Thursday</option>
+                            <option value="Friday">Friday</option>
+                            <option value="Saturday">Saturday</option>
+                        </select>
+                        <select id="sPreset" class="field" aria-label="Common time ranges">
+                            <option value="">Common times…</option>
+                        </select>
+                        <label class="field-label">Start
+                            <select id="sStart" class="field tabular-nums"></select>
+                        </label>
+                        <label class="field-label">End
+                            <select id="sEnd" class="field tabular-nums"></select>
+                        </label>
+                        <button type="submit" class="btn-secondary col-span-2">Add timeslot</button>
+                    </form>
+                </details>
+
+                <div class="flex justify-between items-center text-xs text-neutral-500 -mb-2">
+                    <span>Back-to-back slots join up, so a 1.5 h lecture uses three 30-min slots.</span>
+                    <button type="button" onclick="clearSlots()" class="link-btn">Clear all</button>
+                </div>
                 <div id="slotList" class="list"></div>
             </section>
         </div>
@@ -142,6 +187,7 @@
                 <div><div class="stat-label">Time</div><div id="statTime" class="font-semibold tabular-nums">0 ms</div></div>
                 <div><div class="stat-label">Backtracks</div><div id="statBacktracks" class="font-semibold tabular-nums">0</div></div>
                 <div><div class="stat-label">Method</div><div id="statMethod" class="font-semibold">-</div></div>
+                <div><div class="stat-label">Arrangement</div><div id="statSeed" class="font-semibold tabular-nums">-</div></div>
                 <label class="sm:ml-auto flex flex-col gap-1">
                     <span class="stat-label">View</span>
                     <select id="cohortFilter" onchange="renderTimetable(currentSchedule)" class="field">
@@ -152,6 +198,16 @@
             <div id="staleNotice" class="hidden notice">
                 Inputs changed since this timetable was generated. Generate it again to refresh.
             </div>
+
+            <details id="checksPanel" class="hidden checks" open>
+                <summary><span class="section-title">Schedule check</span> <span id="checksSummary" class="text-sm text-neutral-600"></span></summary>
+                <div class="overflow-x-auto mt-3">
+                    <table class="checks-table">
+                        <thead><tr><th>Course</th><th>Cohort(s)</th><th>Lecture (scheduled / needed)</th><th>Practical (scheduled / needed)</th><th>Status</th></tr></thead>
+                        <tbody id="checksBody"></tbody>
+                    </table>
+                </div>
+            </details>
 
             <div id="timetableContainer" class="flex flex-col gap-8">
                 <div class="border border-neutral-200 p-12 text-center text-sm text-neutral-500">
@@ -170,6 +226,8 @@
         </footer>
 
     </div>
+
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
     <!-- Frontend Script -->
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
